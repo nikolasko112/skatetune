@@ -8,17 +8,29 @@ SkateTuneAudioProcessor::SkateTuneAudioProcessor()
                            .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
 {
-    keyRootParam     = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (paramKeyRoot));
-    scaleParam       = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (paramScale));
-    retuneSpeedParam = dynamic_cast<juce::AudioParameterFloat*>  (apvts.getParameter (paramRetuneSpeed));
-    mixParam         = dynamic_cast<juce::AudioParameterFloat*>  (apvts.getParameter (paramMix));
-    outputGainParam  = dynamic_cast<juce::AudioParameterFloat*>  (apvts.getParameter (paramOutputGain));
+    keyRootParam       = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (paramKeyRoot));
+    scaleParam         = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (paramScale));
+    retuneSpeedParam   = dynamic_cast<juce::AudioParameterFloat*>  (apvts.getParameter (paramRetuneSpeed));
+    mixParam           = dynamic_cast<juce::AudioParameterFloat*>  (apvts.getParameter (paramMix));
+    outputGainParam    = dynamic_cast<juce::AudioParameterFloat*>  (apvts.getParameter (paramOutputGain));
+    humanizeParam      = dynamic_cast<juce::AudioParameterFloat*>  (apvts.getParameter (paramHumanize));
+    inputTypeParam     = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (paramInputType));
+    trackingParam      = dynamic_cast<juce::AudioParameterFloat*>  (apvts.getParameter (paramTracking));
+    formantParam       = dynamic_cast<juce::AudioParameterFloat*>  (apvts.getParameter (paramFormant));
+    transposeParam     = dynamic_cast<juce::AudioParameterFloat*>  (apvts.getParameter (paramTranspose));
+    modernClassicParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (paramModernClassic));
 
     jassert (keyRootParam != nullptr);
     jassert (scaleParam != nullptr);
     jassert (retuneSpeedParam != nullptr);
     jassert (mixParam != nullptr);
     jassert (outputGainParam != nullptr);
+    jassert (humanizeParam != nullptr);
+    jassert (inputTypeParam != nullptr);
+    jassert (trackingParam != nullptr);
+    jassert (formantParam != nullptr);
+    jassert (transposeParam != nullptr);
+    jassert (modernClassicParam != nullptr);
 }
 
 SkateTuneAudioProcessor::~SkateTuneAudioProcessor() = default;
@@ -52,7 +64,53 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkateTuneAudioProcessor::cre
         juce::NormalisableRange<float> (-24.0f, 24.0f), 0.0f,
         juce::AudioParameterFloatAttributes().withLabel ("dB")));
 
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { paramHumanize, 1 }, "Humanize",
+        juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+    // Order must match SkateTuneAudioProcessor::InputType.
+    juce::StringArray inputTypeNames { "Soprano/Alto", "Tenor/Baritone", "Bass", "Instrument (Wide)" };
+    params.push_back (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { paramInputType, 1 }, "Input Type", inputTypeNames, 1));
+
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { paramTracking, 1 }, "Tracking",
+        juce::NormalisableRange<float> (0.0f, 100.0f), 50.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { paramFormant, 1 }, "Formant",
+        juce::NormalisableRange<float> (-100.0f, 100.0f), 0.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { paramTranspose, 1 }, "Transpose",
+        juce::NormalisableRange<float> (-12.0f, 12.0f, 1.0f), 0.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("st")));
+
+    juce::StringArray modernClassicNames { "Modern", "Classic" };
+    params.push_back (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { paramModernClassic, 1 }, "Mode", modernClassicNames, 0));
+
     return { params.begin(), params.end() };
+}
+
+//==============================================================================
+void SkateTuneAudioProcessor::frequencyRangeForInputType (InputType type, float& minHzOut, float& maxHzOut)
+{
+    // Deliberately generous, overlapping bands rather than tight ones: the
+    // cost of a slightly-too-wide search range is a rare octave error, but
+    // the cost of a too-narrow one is losing real signal outright, so each
+    // band leans wide.
+    switch (type)
+    {
+        case InputType::SopranoAlto:   minHzOut = 160.0f; maxHzOut = 1200.0f; break;
+        case InputType::TenorBaritone: minHzOut = 80.0f;  maxHzOut = 1000.0f; break;
+        case InputType::Bass:          minHzOut = 50.0f;  maxHzOut = 400.0f;  break;
+        case InputType::Instrument:
+        default:                       minHzOut = 40.0f;  maxHzOut = 2000.0f; break;
+    }
 }
 
 //==============================================================================
@@ -65,6 +123,11 @@ void SkateTuneAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     retuneSmoother.prepare (sampleRate);
     retuneSmoother.reset (0.0);
 
+    trackingSmoother.prepare (sampleRate);
+    trackingSmoother.reset (220.0); // A3-ish; harmless starting guess, overwritten the instant input is voiced
+
+    humanizeController.prepare (sampleRate);
+
     trickDetector.prepare (sampleRate);
     trickDetector.setThresholds (0.15, 0.60);
     trickDetector.setCooldownSeconds (0.35);
@@ -75,7 +138,14 @@ void SkateTuneAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     for (auto& s : shifters)
         s.prepare (sampleRate);
 
+    formantTilts.clear();
+    formantTilts.resize ((size_t) numChannels);
+    for (auto& f : formantTilts)
+        f.prepare (sampleRate);
+
     rawCorrectionSemitones = 0.0;
+    rawTrackedFreqHold = 220.0;
+    voicedHold = false;
     trickEventCounter.store (0);
     correctionMeter.store (0.0f);
 }
@@ -103,12 +173,26 @@ void SkateTuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     const int numChannels = buffer.getNumChannels();
     const int numSamples  = buffer.getNumSamples();
 
-    // Key/scale/retune-speed are UI-rate controls; re-reading them every
-    // block is negligible cost and keeps this lock-free and listener-free.
+    // Key/scale/retune-speed and the rest of these are all UI-rate
+    // controls; re-reading them every block is negligible cost and keeps
+    // this lock-free and listener-free.
     scaleQuantizer.setKeyRoot (keyRootParam->getIndex());
     scaleQuantizer.setScale (static_cast<skatetune::ScaleType> (scaleParam->getIndex()));
-    retuneSmoother.setRetuneSpeed ((double) retuneSpeedParam->get());
 
+    const bool isClassicMode = modernClassicParam->getIndex() == 1;
+
+    // Classic forgoes Humanize entirely - closer to the hard-edged,
+    // always-at-the-dialled-in-speed character of first-generation
+    // pitch-correction, where Retune Speed was the only speed there was.
+    humanizeController.setAmount (isClassicMode ? 0.0 : (double) humanizeParam->get());
+
+    trackingSmoother.setRetuneSpeed ((double) trackingParam->get());
+
+    float inputMinHz = 70.0f, inputMaxHz = 1000.0f;
+    frequencyRangeForInputType (static_cast<InputType> (inputTypeParam->getIndex()), inputMinHz, inputMaxHz);
+    pitchTracker.setFrequencyRange (inputMinHz, inputMaxHz);
+
+    const double transposeSemitones = (double) transposeParam->get();
     const double mixAmount     = (double) mixParam->get() / 100.0;
     const float  outputGainLin = juce::Decibels::decibelsToGain (outputGainParam->get());
 
@@ -122,6 +206,19 @@ void SkateTuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         for (size_t i = oldSize; i < shifters.size(); ++i)
             shifters[i].prepare (sr);
     }
+    if ((int) formantTilts.size() < numChannels)
+    {
+        auto sr = getSampleRate() > 0.0 ? getSampleRate() : 44100.0;
+        auto oldSize = formantTilts.size();
+        formantTilts.resize ((size_t) numChannels);
+        for (size_t i = oldSize; i < formantTilts.size(); ++i)
+            formantTilts[i].prepare (sr);
+    }
+
+    for (auto& s : shifters)
+        s.setInterpolationQuality (! isClassicMode);
+    for (auto& f : formantTilts)
+        f.setAmount ((double) formantParam->get());
 
     for (int i = 0; i < numSamples; ++i)
     {
@@ -135,18 +232,48 @@ void SkateTuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         {
             if (pitchTracker.isVoiced())
             {
-                double targetFreqUnused = 0.0;
-                scaleQuantizer.process ((double) pitchTracker.getFrequencyHz(),
-                                         targetFreqUnused, rawCorrectionSemitones);
+                rawTrackedFreqHold = (double) pitchTracker.getFrequencyHz();
+                humanizeController.onNewPitchHop (skatetune::ScaleQuantizer::freqToMidi (rawTrackedFreqHold));
+                voicedHold = true;
             }
             else
             {
-                rawCorrectionSemitones = 0.0;
+                voicedHold = false;
             }
         }
 
+        // Tracking smoothing on the frequency estimate itself, ahead of the
+        // quantizer - called every sample (not just at hop boundaries) with
+        // its target held between hops, the same pattern RetuneSmoother
+        // relies on below: its one-pole coefficient assumes it's driven at
+        // the full sample rate, so calling it any less often would silently
+        // make the Tracking knob's time constants far slower than they read.
+        const double smoothedFreqHz = trackingSmoother.process (rawTrackedFreqHold);
+
+        if (voicedHold)
+        {
+            double targetFreqUnused = 0.0;
+            scaleQuantizer.process (smoothedFreqHz, targetFreqUnused, rawCorrectionSemitones);
+        }
+        else
+        {
+            rawCorrectionSemitones = 0.0;
+        }
+
+        // Humanize adjusts the *speed* fed to RetuneSmoother, sample by
+        // sample, not the correction amount itself - same reasoning as
+        // above applies to calling it at full sample rate.
+        const double effectiveRetuneSpeed = humanizeController.getEffectiveRetuneSpeed ((double) retuneSpeedParam->get());
+        retuneSmoother.setRetuneSpeed (effectiveRetuneSpeed);
+
         const double smoothed = retuneSmoother.process (rawCorrectionSemitones);
-        const double ratio = std::pow (2.0, smoothed / 12.0);
+
+        // Transpose is a deliberate, static shift the user dialled in, not
+        // something being corrected - so it's added after smoothing (always
+        // instant) and left out of the meter/trick-trigger below, which are
+        // about how hard the actual *correction* is working.
+        const double finalSemitones = smoothed + transposeSemitones;
+        const double ratio = std::pow (2.0, finalSemitones / 12.0);
 
         correctionMeter.store ((float) std::abs (smoothed), std::memory_order_relaxed);
 
@@ -158,9 +285,10 @@ void SkateTuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
             auto& shifter = shifters[(size_t) ch];
             shifter.setRatio (ratio);
 
-            const float dry   = buffer.getSample (ch, i);
-            const float wet   = shifter.processSample (dry);
-            const float mixed = (float) (dry * (1.0 - mixAmount) + (double) wet * mixAmount);
+            const float dry      = buffer.getSample (ch, i);
+            const float shifted  = shifter.processSample (dry);
+            const float wet      = formantTilts[(size_t) ch].processSample (shifted);
+            const float mixed    = (float) (dry * (1.0 - mixAmount) + (double) wet * mixAmount);
 
             buffer.setSample (ch, i, mixed * outputGainLin);
         }

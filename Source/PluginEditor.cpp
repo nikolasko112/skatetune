@@ -14,18 +14,36 @@ SkateTuneAudioProcessorEditor::SkateTuneAudioProcessorEditor (SkateTuneAudioProc
     const juce::StringArray scaleNames { "Chromatic", "Major", "Minor", "Major Pentatonic", "Minor Pentatonic" };
     scaleBox.addItemList (scaleNames, 1);
 
+    setupCombo (inputTypeBox, inputTypeLabel, "Input Type");
+    const juce::StringArray inputTypeNames { "Soprano/Alto", "Tenor/Baritone", "Bass", "Instrument (Wide)" };
+    inputTypeBox.addItemList (inputTypeNames, 1);
+
+    setupCombo (modeBox, modeLabel, "Mode");
+    const juce::StringArray modeNames { "Modern", "Classic" };
+    modeBox.addItemList (modeNames, 1);
+
     setupRotary (retuneSpeedSlider, retuneSpeedLabel, "Retune Speed");
+    setupRotary (humanizeSlider, humanizeLabel, "Humanize");
+    setupRotary (trackingSlider, trackingLabel, "Tracking");
+    setupRotary (transposeSlider, transposeLabel, "Transpose");
+    setupRotary (formantSlider, formantLabel, "Formant");
     setupRotary (mixSlider, mixLabel, "Mix");
     setupRotary (outputGainSlider, outputGainLabel, "Output Gain");
 
     auto& apvts = processorRef.apvts;
     keyAttachment          = std::make_unique<ComboAttachment>  (apvts, SkateTuneAudioProcessor::paramKeyRoot, keyBox);
     scaleAttachment        = std::make_unique<ComboAttachment>  (apvts, SkateTuneAudioProcessor::paramScale, scaleBox);
+    inputTypeAttachment    = std::make_unique<ComboAttachment>  (apvts, SkateTuneAudioProcessor::paramInputType, inputTypeBox);
+    modeAttachment         = std::make_unique<ComboAttachment>  (apvts, SkateTuneAudioProcessor::paramModernClassic, modeBox);
     retuneSpeedAttachment  = std::make_unique<SliderAttachment> (apvts, SkateTuneAudioProcessor::paramRetuneSpeed, retuneSpeedSlider);
+    humanizeAttachment     = std::make_unique<SliderAttachment> (apvts, SkateTuneAudioProcessor::paramHumanize, humanizeSlider);
+    trackingAttachment     = std::make_unique<SliderAttachment> (apvts, SkateTuneAudioProcessor::paramTracking, trackingSlider);
+    transposeAttachment    = std::make_unique<SliderAttachment> (apvts, SkateTuneAudioProcessor::paramTranspose, transposeSlider);
+    formantAttachment      = std::make_unique<SliderAttachment> (apvts, SkateTuneAudioProcessor::paramFormant, formantSlider);
     mixAttachment          = std::make_unique<SliderAttachment> (apvts, SkateTuneAudioProcessor::paramMix, mixSlider);
     outputGainAttachment   = std::make_unique<SliderAttachment> (apvts, SkateTuneAudioProcessor::paramOutputGain, outputGainSlider);
 
-    setSize (600, 460);
+    setSize (820, 620);
 }
 
 SkateTuneAudioProcessorEditor::~SkateTuneAudioProcessorEditor() = default;
@@ -68,22 +86,45 @@ void SkateTuneAudioProcessorEditor::paint (juce::Graphics& g)
 void SkateTuneAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
-    skaterView.setBounds (bounds.removeFromTop ((int) ((float) bounds.getHeight() * 0.68f)));
+    skaterView.setBounds (bounds.removeFromTop ((int) ((float) bounds.getHeight() * 0.58f)));
 
     auto controls = bounds.reduced (12);
-    constexpr int numControls = 5;
-    const int colWidth = controls.getWidth() / numControls;
+    const int rowHeight = controls.getHeight() / 2;
 
-    auto layoutOne = [&controls, colWidth] (juce::Component& comp, juce::Label& label, int index)
+    auto layoutRow = [] (juce::Rectangle<int> row, std::initializer_list<std::pair<juce::Component*, juce::Label*>> items)
     {
-        auto col = controls.withX (controls.getX() + colWidth * index).withWidth (colWidth);
-        label.setBounds (col.removeFromTop (18));
-        comp.setBounds (col.reduced (4));
+        const int colWidth = row.getWidth() / (int) items.size();
+        int index = 0;
+        for (auto& item : items)
+        {
+            auto col = row.withX (row.getX() + colWidth * index).withWidth (colWidth);
+            item.second->setBounds (col.removeFromTop (18));
+            item.first->setBounds (col.reduced (4));
+            ++index;
+        }
     };
 
-    layoutOne (keyBox, keyLabel, 0);
-    layoutOne (scaleBox, scaleLabel, 1);
-    layoutOne (retuneSpeedSlider, retuneSpeedLabel, 2);
-    layoutOne (mixSlider, mixLabel, 3);
-    layoutOne (outputGainSlider, outputGainLabel, 4);
+    auto topRow    = controls.removeFromTop (rowHeight);
+    auto bottomRow = controls;
+
+    // Choice-style controls on top...
+    layoutRow (topRow, {
+        { &keyBox, &keyLabel },
+        { &scaleBox, &scaleLabel },
+        { &inputTypeBox, &inputTypeLabel },
+        { &modeBox, &modeLabel }
+    });
+
+    // ...continuous knobs on the bottom, roughly in the order a correction
+    // conceptually flows: how the pitch is read and corrected, then a
+    // static offset, then tone, then the final dry/wet and level.
+    layoutRow (bottomRow, {
+        { &retuneSpeedSlider, &retuneSpeedLabel },
+        { &humanizeSlider, &humanizeLabel },
+        { &trackingSlider, &trackingLabel },
+        { &transposeSlider, &transposeLabel },
+        { &formantSlider, &formantLabel },
+        { &mixSlider, &mixLabel },
+        { &outputGainSlider, &outputGainLabel }
+    });
 }

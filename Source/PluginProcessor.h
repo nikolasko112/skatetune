@@ -8,6 +8,8 @@
 #include "dsp/RetuneSmoother.h"
 #include "dsp/GranularPitchShifter.h"
 #include "dsp/TrickEventDetector.h"
+#include "dsp/HumanizeController.h"
+#include "dsp/FormantTilt.h"
 
 /**
     SkateTune - a pitch-correction ("autotune-style") effect. Whenever the
@@ -48,11 +50,20 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     //==============================================================================
-    static constexpr const char* paramKeyRoot     = "keyRoot";
-    static constexpr const char* paramScale       = "scale";
-    static constexpr const char* paramRetuneSpeed = "retuneSpeed";
-    static constexpr const char* paramMix         = "mix";
-    static constexpr const char* paramOutputGain  = "outputGain";
+    static constexpr const char* paramKeyRoot      = "keyRoot";
+    static constexpr const char* paramScale        = "scale";
+    static constexpr const char* paramRetuneSpeed  = "retuneSpeed";
+    static constexpr const char* paramMix          = "mix";
+    static constexpr const char* paramOutputGain   = "outputGain";
+    static constexpr const char* paramHumanize     = "humanize";
+    static constexpr const char* paramInputType    = "inputType";
+    static constexpr const char* paramTracking     = "tracking";
+    static constexpr const char* paramFormant      = "formant";
+    static constexpr const char* paramTranspose    = "transpose";
+    static constexpr const char* paramModernClassic = "modernClassic";
+
+    // Order must match the choice list given to the paramInputType parameter.
+    enum class InputType { SopranoAlto = 0, TenorBaritone, Bass, Instrument };
 
     juce::AudioProcessorValueTreeState apvts;
 
@@ -64,19 +75,32 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    juce::AudioParameterChoice* keyRootParam     = nullptr;
-    juce::AudioParameterChoice* scaleParam       = nullptr;
-    juce::AudioParameterFloat*  retuneSpeedParam = nullptr;
-    juce::AudioParameterFloat*  mixParam         = nullptr;
-    juce::AudioParameterFloat*  outputGainParam  = nullptr;
+    juce::AudioParameterChoice* keyRootParam      = nullptr;
+    juce::AudioParameterChoice* scaleParam        = nullptr;
+    juce::AudioParameterFloat*  retuneSpeedParam  = nullptr;
+    juce::AudioParameterFloat*  mixParam          = nullptr;
+    juce::AudioParameterFloat*  outputGainParam   = nullptr;
+    juce::AudioParameterFloat*  humanizeParam     = nullptr;
+    juce::AudioParameterChoice* inputTypeParam    = nullptr;
+    juce::AudioParameterFloat*  trackingParam     = nullptr;
+    juce::AudioParameterFloat*  formantParam      = nullptr;
+    juce::AudioParameterFloat*  transposeParam    = nullptr;
+    juce::AudioParameterChoice* modernClassicParam = nullptr;
 
     skatetune::PitchTracker       pitchTracker;
     skatetune::ScaleQuantizer     scaleQuantizer;
     skatetune::RetuneSmoother     retuneSmoother;
+    skatetune::RetuneSmoother     trackingSmoother; // same one-pole math, repurposed to smooth the tracked frequency
+    skatetune::HumanizeController humanizeController;
     skatetune::TrickEventDetector trickDetector;
-    std::vector<skatetune::GranularPitchShifter> shifters; // one per channel, same ratio
+    std::vector<skatetune::GranularPitchShifter> shifters;    // one per channel, same ratio
+    std::vector<skatetune::FormantTilt>          formantTilts; // one per channel
 
     double rawCorrectionSemitones = 0.0; // held between pitch-tracker hops, updated every sample downstream
+    double rawTrackedFreqHold = 220.0;   // last voiced frequency estimate, held between hops for trackingSmoother
+    bool   voicedHold = false;           // held between hops: was the most recent hop voiced?
+
+    static void frequencyRangeForInputType (InputType type, float& minHzOut, float& maxHzOut);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SkateTuneAudioProcessor)
 };
