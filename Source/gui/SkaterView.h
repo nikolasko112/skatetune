@@ -31,16 +31,28 @@ private:
         float armAngle2 = 0.0f;     // degrees, back arm
         float legAngle1 = 0.0f;     // degrees, front leg
         float legAngle2 = 0.0f;     // degrees, back leg
-        float boardRotation = 0.0f; // degrees
+
+        // Three independent board rotations, each faked with a different
+        // 2D trick so a side-on silhouette can still tell them apart:
+        float boardFlipDeg  = 0.0f; // about the long (nose-tail) axis -> squashes the drawn HEIGHT, swaps to the underside colour past 180
+        float boardShoveDeg = 0.0f; // about the vertical axis         -> squashes the drawn WIDTH
+        float boardTiltDeg  = 0.0f; // an ordinary in-plane tilt (grind pitch, manual, slide) - no squash, just rotated
+
         float bodyBounceY = 0.0f;   // normalised, - is up
-        float boardLift = 0.0f;     // normalised, how far the board is off the ground
+        float boardLift   = 0.0f;   // normalised, how far the board is off the ground
+
+        bool  showRail          = false; // Grind: draw a rail/ledge under the skater
+        float sparkAmount       = 0.0f;  // Grind/Slide: 0..1 intensity for contact sparks
+        float groundReachFoot2  = 0.0f;  // Boneless: 0..1, how far the back foot reaches down to the ground
+        float boardAnchorBlend  = 0.5f;  // 0 = board stays under the front foot, 1 = under the back foot, 0.5 = midpoint (the normal riding stance)
     };
 
-    static Pose computePose (skatetune::TrickPose pose, float amount, float idlePhase);
+    static Pose computePose (const skatetune::Trick& trick, float phase01, float idlePhase);
 
     void drawBackground (juce::Graphics& g, juce::Rectangle<float> area) const;
     void drawRamp (juce::Graphics& g, juce::Rectangle<float> area) const;
     void drawSkater (juce::Graphics& g, juce::Rectangle<float> area, const Pose& pose) const;
+    void drawRailAndSparks (juce::Graphics& g, juce::Rectangle<float> area, const Pose& pose) const;
     void drawHud (juce::Graphics& g, juce::Rectangle<float> area) const;
 
     SkateTuneAudioProcessor& processor;

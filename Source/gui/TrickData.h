@@ -4,16 +4,18 @@
 namespace skatetune
 {
 
-/** Which simplified silhouette to draw for a trick. Several tricks share a
-    pose (e.g. all the flip tricks are "tucked in mid-air") - the name and
-    score are what make each one feel distinct in the popup banner. */
+/** Which simplified silhouette + rotation style to draw for a trick.
+    AirTuck tricks are told apart from EACH OTHER by boardFlipTurns /
+    boardShoveTurns below (that's the whole point - a kickflip and a
+    heelflip must not look identical just because both are "airborne"),
+    Grind tricks by grindTiltDeg, and the rest get a dedicated pose. */
 enum class TrickPose
 {
-    AirTuck,
-    Grind,
-    Manual,
-    Boneless,
-    Slide
+    AirTuck,   // airborne - board spin comes from boardFlipTurns/boardShoveTurns below
+    Grind,     // grinding a rail/ledge - board held at a fixed grindTiltDeg, rail+sparks drawn underneath
+    Manual,    // balancing on two wheels, held (not a quick snap) with a small wobble
+    Boneless,  // one foot plants on the ground mid-trick
+    Slide      // sliding on the board's underside along the coping, sparks
 };
 
 struct Trick
@@ -21,25 +23,43 @@ struct Trick
     const char* name;
     TrickPose pose;
     int score;
+
+    // AirTuck only: how many full rotations the board makes about each of
+    // two different axes, so the simple 2D silhouette can fake each one
+    // with a believable squash instead of one generic flat spin:
+    //  - boardFlipTurns rotates about the board's long (nose-tail) axis -
+    //    the squash that reads as "edge-on" happens to the board's HEIGHT.
+    //    +ve = kickflip direction, -ve = heelflip direction.
+    //  - boardShoveTurns rotates about the vertical axis (a "shove-it") -
+    //    the squash that reads as "edge-on" happens to the board's WIDTH.
+    // A trick can use either, both (a varial-style combo), or neither
+    // (an ollie: the board never leaves level at all).
+    float boardFlipTurns  = 0.0f;
+    float boardShoveTurns = 0.0f;
+
+    // Grind only: static board pitch held through the whole grind - 0 =
+    // level (50-50), +ve = nose lifted (grinding the tail truck, "5-0"),
+    // -ve = tail lifted (grinding the nose truck, "Nosegrind").
+    float grindTiltDeg = 0.0f;
 };
 
 inline const std::array<Trick, 14>& allTricks()
 {
     static const std::array<Trick, 14> tricks { {
-        { "Ollie",        TrickPose::AirTuck,  100 },
-        { "Pop Shove-It",  TrickPose::AirTuck, 150 },
-        { "Kickflip",      TrickPose::AirTuck, 200 },
-        { "Heelflip",      TrickPose::AirTuck, 200 },
-        { "Varial Flip",   TrickPose::AirTuck, 250 },
-        { "Hardflip",      TrickPose::AirTuck, 350 },
-        { "360 Flip",      TrickPose::AirTuck, 400 },
-        { "Impossible",    TrickPose::AirTuck, 450 },
-        { "Boneless",      TrickPose::Boneless, 150 },
-        { "Manual",        TrickPose::Manual,  100 },
-        { "50-50 Grind",   TrickPose::Grind,   200 },
-        { "5-0 Grind",     TrickPose::Grind,   250 },
-        { "Nosegrind",     TrickPose::Grind,   300 },
-        { "Darkslide",     TrickPose::Slide,   500 },
+        { "Ollie",        TrickPose::AirTuck,  100,  0.0f, 0.0f, 0.0f },
+        { "Pop Shove-It",  TrickPose::AirTuck, 150,  0.0f, 0.5f, 0.0f },
+        { "Kickflip",      TrickPose::AirTuck, 200,  1.0f, 0.0f, 0.0f },
+        { "Heelflip",      TrickPose::AirTuck, 200, -1.0f, 0.0f, 0.0f },
+        { "Varial Flip",   TrickPose::AirTuck, 250,  1.0f, 0.5f, 0.0f },
+        { "Hardflip",      TrickPose::AirTuck, 350, -1.0f, 0.5f, 0.0f },
+        { "360 Flip",      TrickPose::AirTuck, 400,  1.0f, 1.0f, 0.0f },
+        { "Impossible",    TrickPose::AirTuck, 450,  2.0f, 0.0f, 0.0f },
+        { "Boneless",      TrickPose::Boneless, 150, 0.0f, 0.0f, 0.0f },
+        { "Manual",        TrickPose::Manual,  100,  0.0f, 0.0f, 0.0f },
+        { "50-50 Grind",   TrickPose::Grind,   200,  0.0f, 0.0f,   0.0f },
+        { "5-0 Grind",     TrickPose::Grind,   250,  0.0f, 0.0f,  18.0f },
+        { "Nosegrind",     TrickPose::Grind,   300,  0.0f, 0.0f, -18.0f },
+        { "Darkslide",     TrickPose::Slide,   500,  0.0f, 0.0f,   0.0f },
     } };
     return tricks;
 }

@@ -63,7 +63,19 @@ void SkaterView::triggerNewTrick()
 }
 
 //==============================================================================
-SkaterView::Pose SkaterView::computePose (TrickPose pose, float phase01, float idlePhase)
+// A 0->1->0 trapezoid: ramps up over [0,riseEnd], HOLDS at 1 over
+// [riseEnd,fallStart], then ramps back down over [fallStart,1]. Several
+// tricks below are about holding a position (a grind's tilt, a manual's
+// balance, a slide staying upside-down) rather than snapping through one
+// quick bump the way sin(pi*t) does - this is that "hold" shape.
+static float trapezoid (float t, float riseEnd, float fallStart)
+{
+    const float rise = juce::jlimit (0.0f, 1.0f, t / juce::jmax (0.0001f, riseEnd));
+    const float fall = juce::jlimit (0.0f, 1.0f, (1.0f - t) / juce::jmax (0.0001f, 1.0f - fallStart));
+    return juce::jmin (rise, fall);
+}
+
+SkaterView::Pose SkaterView::computePose (const Trick& trick, float phase01, float idlePhase)
 {
     Pose p;
 
@@ -78,61 +90,104 @@ SkaterView::Pose SkaterView::computePose (TrickPose pose, float phase01, float i
     }
 
     const float t = juce::jlimit (0.0f, 1.0f, phase01);
-    const float amount = std::sin (juce::MathConstants<float>::pi * t); // 0 -> 1 -> 0
+    const float bump = std::sin (juce::MathConstants<float>::pi * t); // 0 -> 1 -> 0, the "quick trick" shape
 
-    switch (pose)
+    switch (trick.pose)
     {
         case TrickPose::AirTuck:
-            p.bodyLean      = -15.0f * amount;
-            p.armAngle1     = -20.0f - 50.0f * amount;
-            p.armAngle2     =  20.0f + 40.0f * amount;
-            p.legAngle1     = -10.0f - 60.0f * amount;
-            p.legAngle2     =  10.0f + 60.0f * amount;
-            p.boardRotation = t * 360.0f;
-            p.bodyBounceY   = -0.18f * amount;
-            p.boardLift     =  0.22f * amount;
+        {
+            // How "busy" the spin is drives a bit of extra hang-time/pop -
+            // an Ollie (no spin at all) stays modest, a 360 Flip or
+            // Impossible (the most rotation) gets visibly more air.
+            const float spin = std::abs (trick.boardFlipTurns) + std::abs (trick.boardShoveTurns);
+            const float bigness = juce::jlimit (0.0f, 1.0f, spin / 2.0f);
+
+            p.bodyLean    = -15.0f * bump;
+            p.armAngle1   = -20.0f - 50.0f * bump;
+            p.armAngle2   =  20.0f + 40.0f * bump;
+            p.legAngle1   = -10.0f - 60.0f * bump;
+            p.legAngle2   =  10.0f + 60.0f * bump;
+            p.bodyBounceY = -(0.16f + 0.10f * bigness) * bump;
+            p.boardLift   =  (0.20f + 0.14f * bigness) * bump;
+
+            // The actual trick-telling rotations: a kickflip and a
+            // heelflip spin the SAME board axis in opposite directions: a
+            // shove-it spins a different axis entirely; a varial/hardflip/
+            // 360-flip layer both at once. drawSkater() turns these two
+            // angles into two independently-squashed axes so each reads
+            // as a distinct rotation rather than one generic flat spin.
+            p.boardFlipDeg  = trick.boardFlipTurns  * 360.0f * t;
+            p.boardShoveDeg = trick.boardShoveTurns * 360.0f * t;
             break;
+        }
 
         case TrickPose::Grind:
-            p.bodyLean      = 10.0f * amount;
-            p.armAngle1     = -40.0f * amount;
-            p.armAngle2     =  30.0f * amount;
-            p.legAngle1     = -70.0f * amount;
-            p.legAngle2     = -50.0f * amount;
-            p.boardRotation =  90.0f * amount;
-            p.bodyBounceY   = -0.05f * amount;
-            p.boardLift     =  0.05f * amount;
+            p.bodyLean     = 10.0f * bump;
+            p.armAngle1    = -40.0f * bump;
+            p.armAngle2    =  30.0f * bump;
+            p.legAngle1    = -70.0f * bump;
+            p.legAngle2    = -50.0f * bump;
+            // Ease into the grind's own held tilt (50-50 flat, 5-0
+            // nose-up, Nosegrind nose-down) rather than snapping to it.
+            p.boardTiltDeg = trick.grindTiltDeg * trapezoid (t, 0.18f, 0.82f);
+            p.bodyBounceY  = -0.05f * bump;
+            p.showRail     = t > 0.08f && t < 0.92f;
+            p.sparkAmount  = trapezoid (t, 0.15f, 0.85f);
             break;
 
         case TrickPose::Manual:
-            p.bodyLean      = -20.0f * amount;
-            p.armAngle1     = -60.0f * amount;
-            p.armAngle2     =  60.0f * amount;
-            p.legAngle1     =  10.0f * amount;
-            p.legAngle2     = -30.0f * amount;
-            p.boardRotation = -25.0f * amount;
+        {
+            // A manual is a held balance, not a snap - hold near the
+            // tipped-back position for most of the animation, with a
+            // small wobble to read as "actively balancing" rather than
+            // frozen.
+            const float hold = trapezoid (t, 0.18f, 0.82f);
+            const float wobble = 3.0f * std::sin (t * juce::MathConstants<float>::pi * 5.0f) * hold;
+            p.bodyLean     = -22.0f * hold + wobble * 0.3f;
+            p.armAngle1    = -55.0f * hold - wobble;
+            p.armAngle2    =  55.0f * hold + wobble;
+            p.legAngle1    =  12.0f * hold;
+            p.legAngle2    = -32.0f * hold;
+            p.boardTiltDeg = -28.0f * hold + wobble;
             break;
+        }
 
         case TrickPose::Boneless:
-            p.bodyLean      =   5.0f * amount;
-            p.armAngle1     = -90.0f * amount;
-            p.armAngle2     =  50.0f * amount;
-            p.legAngle1     =  40.0f * amount;
-            p.legAngle2     = -80.0f * amount;
-            p.boardRotation =  20.0f * amount;
-            p.bodyBounceY   = -0.10f * amount;
-            p.boardLift     =  0.15f * amount;
+            // The back foot plants on the ground for the middle part of
+            // the trick while the front foot keeps the board - so the
+            // board should stay anchored near the front foot then, not at
+            // the usual both-feet midpoint.
+            p.groundReachFoot2 = trapezoid (t, 0.12f, 0.55f);
+            p.bodyLean         =   8.0f * bump;
+            p.armAngle1        = -90.0f * bump;
+            p.armAngle2        =  55.0f * bump;
+            p.legAngle1        =  35.0f * bump;
+            p.legAngle2        = juce::jmap (p.groundReachFoot2, 0.0f, 1.0f, -80.0f * bump, 8.0f);
+            p.boardTiltDeg     = 20.0f * bump;
+            p.bodyBounceY      = 0.05f * p.groundReachFoot2 - 0.14f * bump;
+            p.boardLift        = 0.16f * bump;
+            p.boardAnchorBlend = juce::jmap (p.groundReachFoot2, 0.0f, 1.0f, 0.5f, 0.12f);
             break;
 
         case TrickPose::Slide:
-            p.bodyLean      =  20.0f * amount;
-            p.armAngle1     = -70.0f * amount;
-            p.armAngle2     =  70.0f * amount;
-            p.legAngle1     = -80.0f * amount;
-            p.legAngle2     = -40.0f * amount;
-            p.boardRotation = 180.0f * amount;
-            p.bodyBounceY   = -0.08f * amount;
-            p.boardLift     =  0.08f * amount;
+            p.bodyLean     =  20.0f * bump;
+            p.armAngle1    = -70.0f * bump;
+            p.armAngle2    =  70.0f * bump;
+            p.legAngle1    = -80.0f * bump;
+            p.legAngle2    = -40.0f * bump;
+            // Flips upside-down fast, HOLDS it (that's the slide), then
+            // flips back - a Darkslide rides on the board's underside.
+            // This deliberately reuses boardFlipDeg (not boardTiltDeg):
+            // a static 180-degree TILT of a left-right-symmetric board
+            // shape is pixel-for-pixel identical to not rotating it at
+            // all, so it would show nothing happening. Driving it through
+            // boardFlipDeg instead passes through the edge-on squash on
+            // the way there and triggers the underside colour swap once
+            // held past 90 degrees, which actually reads as "flipped over".
+            p.boardFlipDeg = 180.0f * trapezoid (t, 0.15f, 0.85f);
+            p.bodyBounceY  = -0.08f * bump;
+            p.boardLift    =  0.06f * bump;
+            p.sparkAmount  = trapezoid (t, 0.2f, 0.8f);
             break;
     }
 
@@ -153,13 +208,16 @@ void SkaterView::paint (juce::Graphics& g)
     if (currentTrickIndex >= 0 && (now - triggerTimeSeconds) <= trickAnimSeconds)
     {
         const float phase = (float) ((now - triggerTimeSeconds) / trickAnimSeconds);
-        pose = computePose (allTricks()[(size_t) currentTrickIndex].pose, phase, idlePhase);
+        pose = computePose (allTricks()[(size_t) currentTrickIndex], phase, idlePhase);
     }
     else
     {
-        pose = computePose (TrickPose::AirTuck, -1.0f, idlePhase);
+        // The idle early-return in computePose() never looks at the trick
+        // argument, so any valid entry works here - Ollie is as good as any.
+        pose = computePose (allTricks()[0], -1.0f, idlePhase);
     }
 
+    drawRailAndSparks (g, area, pose);
     drawSkater (g, area, pose);
     drawHud (g, area);
 }
@@ -244,6 +302,7 @@ void SkaterView::drawSkater (juce::Graphics& g, juce::Rectangle<float> area, con
     const juce::Colour helmetColour (0xff39d6c7);
     const juce::Colour boardColour (0xff2e2b45);
     const juce::Colour boardStripe (0xffff5d8f);
+    const juce::Colour boardUnderside (0xff9aa0ad); // griptape-side vs wheels/truck-side, for the flip colour swap
 
     const float limbWidth = scale * 0.11f;
 
@@ -259,23 +318,43 @@ void SkaterView::drawSkater (juce::Graphics& g, juce::Rectangle<float> area, con
     const float foot2X = anchorX + std::sin (toRad (pose.legAngle2)) * legLen;
     const float foot2Y = anchorY + std::cos (toRad (pose.legAngle2)) * legLen;
 
-    // board, centred under the feet, lifted/rotated per pose
+    // board, anchored under the feet (usually the midpoint - see
+    // boardAnchorBlend), lifted/rotated per pose.
     const float boardW = scale * 1.15f;
     const float boardH = scale * 0.13f;
-    const float boardCX = (foot1X + foot2X) * 0.5f;
-    const float boardCY = (foot1Y + foot2Y) * 0.5f - pose.boardLift * area.getHeight() * 0.6f;
+    const float boardCX  = foot1X + (foot2X - foot1X) * pose.boardAnchorBlend;
+    const float boardCY0 = foot1Y + (foot2Y - foot1Y) * pose.boardAnchorBlend;
+    const float boardCY  = boardCY0 - pose.boardLift * area.getHeight() * 0.6f;
+
+    // Two independent fake-3D rotations, each squashing a different
+    // dimension so a kickflip/heelflip (long-axis spin) and a shove-it
+    // (vertical-axis spin) read as genuinely different motions rather than
+    // one flat spin wearing different names. cos() of the flip angle also
+    // decides which "side" is facing us, for the underside colour swap.
+    const float flipRad  = toRad (pose.boardFlipDeg);
+    const float shoveRad = toRad (pose.boardShoveDeg);
+    const float cosFlip  = std::cos (flipRad);
+    const float heightSquash = juce::jmax (0.12f, std::abs (cosFlip));   // never fully collapse to an invisible sliver
+    const float widthSquash  = juce::jmax (0.12f, std::abs (std::cos (shoveRad)));
+    const bool  showUnderside = cosFlip < 0.0f;
+
+    const float drawnW = boardW * widthSquash;
+    const float drawnH = boardH * heightSquash;
 
     juce::Path board;
-    board.addRoundedRectangle (-boardW * 0.5f, -boardH * 0.5f, boardW, boardH, boardH * 0.45f);
+    board.addRoundedRectangle (-drawnW * 0.5f, -drawnH * 0.5f, drawnW, drawnH, drawnH * 0.45f);
     juce::Path stripe;
-    stripe.addRoundedRectangle (-boardW * 0.5f, -boardH * 0.18f, boardW, boardH * 0.36f, boardH * 0.18f);
-    auto boardTransform = juce::AffineTransform::rotation (toRad (pose.boardRotation)).translated (boardCX, boardCY);
+    stripe.addRoundedRectangle (-drawnW * 0.5f, -drawnH * 0.18f, drawnW, drawnH * 0.36f, drawnH * 0.18f);
+    // boardTiltDeg is an ordinary, non-squashing in-plane rotation (a
+    // grind's pitch, a manual's tipped-back angle) - independent of the
+    // flip/shove fake-3D spins above, and zero for tricks that don't use it.
+    auto boardTransform = juce::AffineTransform::rotation (toRad (pose.boardTiltDeg)).translated (boardCX, boardCY);
     board.applyTransform (boardTransform);
     stripe.applyTransform (boardTransform);
 
-    g.setColour (boardColour);
+    g.setColour (showUnderside ? boardUnderside : boardColour);
     g.fillPath (board);
-    g.setColour (boardStripe);
+    g.setColour (showUnderside ? boardUnderside.darker (0.3f) : boardStripe);
     g.fillPath (stripe);
 
     // legs
@@ -310,6 +389,50 @@ void SkaterView::drawSkater (juce::Graphics& g, juce::Rectangle<float> area, con
     g.fillEllipse (headX - headR, headY - headR, headR * 2.0f, headR * 2.0f);
     g.setColour (boardColour.withAlpha (0.6f));
     g.drawEllipse (headX - headR, headY - headR, headR * 2.0f, headR * 2.0f, 1.5f);
+}
+
+void SkaterView::drawRailAndSparks (juce::Graphics& g, juce::Rectangle<float> area, const Pose& pose) const
+{
+    // Matches drawSkater()'s own anchor calculation so the rail/sparks line
+    // up with the feet regardless of the current bounce/lift.
+    const float anchorY = area.getY() + area.getHeight() * 0.60f + pose.bodyBounceY * area.getHeight();
+    const float contactX = area.getX() + area.getWidth() * 0.5f;
+    const float contactY = anchorY + area.getHeight() * 0.08f;
+
+    if (pose.showRail)
+    {
+        const float railHalfW = area.getWidth() * 0.42f;
+        const float railH = area.getHeight() * 0.022f;
+
+        g.setColour (juce::Colours::black.withAlpha (0.25f));
+        g.fillRoundedRectangle (contactX - railHalfW, contactY - railH * 0.3f, railHalfW * 2.0f, railH, railH * 0.5f);
+        g.setColour (juce::Colour (0xffb7c6cf));
+        g.fillRoundedRectangle (contactX - railHalfW, contactY - railH * 0.5f, railHalfW * 2.0f, railH, railH * 0.5f);
+        g.setColour (juce::Colours::white.withAlpha (0.6f));
+        g.fillRoundedRectangle (contactX - railHalfW, contactY - railH * 0.5f, railHalfW * 2.0f, railH * 0.3f, railH * 0.15f);
+    }
+
+    if (pose.sparkAmount > 0.02f)
+    {
+        // Sparks are meant to flicker randomly frame to frame, so the
+        // system random (not the seeded member used for trick choice) is
+        // the right source here - there's nothing to reproduce later.
+        auto& rnd = juce::Random::getSystemRandom();
+        const int numSparks = (int) std::round (7.0f * pose.sparkAmount);
+        const float burst = area.getWidth() * 0.055f * pose.sparkAmount;
+
+        for (int i = 0; i < numSparks; ++i)
+        {
+            const float ang = rnd.nextFloat() * juce::MathConstants<float>::twoPi;
+            const float dist = (0.25f + rnd.nextFloat() * 0.75f) * burst;
+            const float sx = contactX + std::cos (ang) * dist;
+            const float sy = contactY - std::abs (std::sin (ang)) * dist * 0.6f; // mostly up/sideways, not downward
+            const float r = area.getWidth() * 0.0055f * (0.5f + rnd.nextFloat());
+
+            g.setColour (juce::Colour (0xffffe08a).withAlpha (pose.sparkAmount * (0.4f + rnd.nextFloat() * 0.6f)));
+            g.fillEllipse (sx - r, sy - r, r * 2.0f, r * 2.0f);
+        }
+    }
 }
 
 void SkaterView::drawHud (juce::Graphics& g, juce::Rectangle<float> area) const
