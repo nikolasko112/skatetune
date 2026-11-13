@@ -405,6 +405,111 @@ static void testTrickEventDetector()
     check (fireCount2 == 0, "never fires if it never crosses the high threshold", fireCount2, 0);
 }
 
+// A harmonically-rich "sung note" (fundamental + 5 falling-amplitude
+// harmonics + light vibrato), deliberately NOT a pure sine. Needed because
+// the bug this test targets is specifically about the Hz-domain smoother's
+// *transient*, and a realistic input matters for realism, though the bug
+// itself is really about the smoother's own state, not the tone's shape.
+static std::vector<float> makeVoiceLikeTone (double freqHz, double sr, double seconds, double vibratoDepthCents = 20.0)
+{
+    size_t n = (size_t) (seconds * sr);
+    std::vector<float> out (n);
+    const double harmAmps[5] = { 1.0, 0.6, 0.35, 0.22, 0.12 };
+    double phases[5] = { 0, 0, 0, 0, 0 };
+    for (size_t i = 0; i < n; ++i)
+    {
+        double t = (double) i / sr;
+        double vibCents = vibratoDepthCents * std::sin (2.0 * 3.14159265358979323846 * 5.5 * t);
+        double instFreq = freqHz * std::pow (2.0, vibCents / 1200.0);
+        double s = 0.0;
+        for (int h = 0; h < 5; ++h)
+        {
+            phases[h] += 2.0 * 3.14159265358979323846 * instFreq * (double) (h + 1) / sr;
+            s += harmAmps[h] * std::sin (phases[h]);
+        }
+        out[i] = (float) (s * 0.18);
+    }
+    return out;
+}
+
+// Regression test for a real bug found by empirically running a sustained
+// note through the full chain (not by reasoning about the code): the
+// Tracking knob's Hz-domain smoother (trackingSmoother in PluginProcessor)
+// starts life at current=0.0 and, left alone, climbs from there up to the
+// real tracked frequency at its own (possibly very slow - up to 250ms tau)
+// time constant - and a one-pole filter needs several time constants to
+// actually arrive. For the better part of a second after EVERY onset
+// (first note after plugin load, or any note after a silence/consonant),
+// the scale quantizer downstream was being fed a continuum of WRONG
+// intermediate frequencies, each snapping to whatever scale note happened
+// to be nearest THAT wrong value - so the correction amount kept drifting
+// instead of settling, and could overshoot well past the correct target
+// (confirmed empirically: a note sung 40 cents flat of D4 drifted to +58
+// cents, past the correct +40, and was *still rising* a full second in).
+// The fix is to snap the smoother straight to the new frequency the instant
+// a genuinely new onset is detected (mirroring the same "is this a note
+// change or a hold" distinction HumanizeController already makes), so this
+// test mimics exactly that onset-detection shape rather than calling
+// trackingSmoother in isolation.
+static void testTrackingSmootherSnapsOnNewOnset()
+{
+    std::printf ("-- Tracking-knob Hz smoother: snaps on new onset instead of drifting --\n");
+    const double sr = 44100.0;
+
+    PitchTracker tracker; tracker.prepare (sr);
+    RetuneSmoother trackingSmoother; trackingSmoother.prepare (sr); trackingSmoother.setRetuneSpeed (0.0); // Tracking=0: slowest, worst case
+    ScaleQuantizer quant; quant.setKeyRoot (0); quant.setScale (ScaleType::Major); // C major
+    RetuneSmoother retuneSmoother; retuneSmoother.prepare (sr); retuneSmoother.setRetuneSpeed (50.0);
+
+    // D4 is 293.66 Hz; sing it 40 cents flat, so the correct correction is a
+    // clean, unambiguous +0.40 semitones (not near any scale-note boundary).
+    const double targetSemis = 0.40;
+    const double sungFreq = 293.66 * std::pow (2.0, -40.0 / 1200.0);
+    auto sig = makeVoiceLikeTone (sungFreq, sr, 1.2);
+
+    double rawTrackedFreqHold = 0.0;
+    bool voicedHold = false;
+    double rawCorrSemis = 0.0;
+    double checkpoint500ms = 0.0, checkpoint1000ms = 0.0;
+    double maxSeen = -1.0e9;
+
+    for (size_t i = 0; i < sig.size(); ++i)
+    {
+        if (tracker.pushSample (sig[i]))
+        {
+            if (tracker.isVoiced())
+            {
+                const bool isNewOnset = ! voicedHold;
+                rawTrackedFreqHold = (double) tracker.getFrequencyHz();
+                if (isNewOnset)
+                    trackingSmoother.reset (rawTrackedFreqHold); // the fix under test
+                voicedHold = true;
+            }
+            else voicedHold = false;
+        }
+
+        double smoothedFreqHz = trackingSmoother.process (rawTrackedFreqHold);
+        if (voicedHold)
+        {
+            double targetFreqUnused = 0.0;
+            quant.process (smoothedFreqHz, targetFreqUnused, rawCorrSemis);
+        }
+        double smoothed = retuneSmoother.process (rawCorrSemis);
+
+        maxSeen = std::max (maxSeen, smoothed);
+        double t = (double) i / sr;
+        if (std::abs (t - 0.5) < 0.5 / sr) checkpoint500ms = smoothed;
+        if (std::abs (t - 1.0) < 0.5 / sr) checkpoint1000ms = smoothed;
+    }
+
+    check (std::abs (checkpoint500ms - targetSemis) < 0.10,
+           "correction has already settled near +0.40 semitones by 500ms", checkpoint500ms, targetSemis);
+    check (std::abs (checkpoint1000ms - targetSemis) < 0.10,
+           "...and is still correctly settled at 1000ms, not still drifting", checkpoint1000ms, targetSemis);
+    check (maxSeen < targetSemis + 0.15,
+           "never overshoots meaningfully past the correct target", maxSeen, targetSemis);
+}
+
 static void testFullChainIntegration()
 {
     std::printf ("-- Full chain integration (mimics processBlock) --\n");
@@ -475,6 +580,7 @@ int main()
     testRetuneSmoother();
     testHumanizeController();
     testFormantTilt();
+    testTrackingSmootherSnapsOnNewOnset();
     testTrickEventDetector();
     testFullChainIntegration();
 
