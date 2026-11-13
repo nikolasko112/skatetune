@@ -13,7 +13,15 @@ set -euo pipefail
 
 BUILD_DIR="${1:-build}"
 OUT_DIR="${2:-installer_output}"
-VERSION="1.0.0"
+# Real, bumped-every-release version (CI passes this in from CMakeLists.txt's
+# project() version, so there is one source of truth). Falls back to 1.0.0
+# for a manual/local run that doesn't set it.
+VERSION="${SKATETUNE_VERSION:-1.0.0}"
+# Fixed filename of the very first release, kept forever so the download
+# link already shared with testers never breaks even as VERSION moves on -
+# see the "cp" near the end of this script, which publishes the SAME
+# installer under both names.
+LEGACY_FIXED_FILENAME="SkateTune-Installer-1.0.0.pkg"
 IDENTIFIER_BASE="com.skatetune.skatetune"
 
 VST3_SRC="$BUILD_DIR/SkateTune_artefacts/Release/VST3/SkateTune.vst3"
@@ -100,3 +108,11 @@ productbuild --distribution "$STAGING/Distribution.xml" \
 rm -f "$OUT_DIR/SkateTuneVST3.pkg" "$OUT_DIR/SkateTuneAU.pkg"
 
 echo "Installer written to: $OUT_DIR/SkateTune-Installer-$VERSION.pkg"
+
+# Also publish under the original fixed filename (a no-op if VERSION is
+# still 1.0.0, since source and dest would already be the same file) so
+# whoever has the very first download link keeps getting the latest build.
+if [ "$OUT_DIR/SkateTune-Installer-$VERSION.pkg" != "$OUT_DIR/$LEGACY_FIXED_FILENAME" ]; then
+    cp "$OUT_DIR/SkateTune-Installer-$VERSION.pkg" "$OUT_DIR/$LEGACY_FIXED_FILENAME"
+    echo "Also published as: $OUT_DIR/$LEGACY_FIXED_FILENAME (stable link, never renamed)"
+fi
