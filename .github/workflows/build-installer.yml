@@ -5,6 +5,9 @@ name: Build macOS installer (VST3 + AU)
     branches: [ main, master ]
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-15-intel
@@ -52,3 +55,13 @@ jobs:
           name: SkateTune-macOS
           path: installer_output/*
           if-no-files-found: error
+
+      - name: Publish downloadable release (no GitHub login needed)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-build
+          name: "SkateTune - latest test build"
+          body: "Double-click SkateTune-Installer-1.0.0.pkg to install the VST3 and AU plugin in Logic Pro."
+          files: installer_output/SkateTune-Installer-1.0.0.pkg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
