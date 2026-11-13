@@ -1,0 +1,54 @@
+name: Build macOS installer (VST3 + AU)
+
+"on":
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: "Configure (universal binary: Apple Silicon + Intel)"
+        run: |
+          cmake -B build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+                -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: Build (VST3 + AU)
+        run: cmake --build build --config Release -j4
+
+      - name: Locate build artefacts
+        run: |
+          echo "VST3 bundle:"
+          find build/SkateTune_artefacts -iname "*.vst3" -maxdepth 4
+          echo "AU component:"
+          find build/SkateTune_artefacts -iname "*.component" -maxdepth 4
+
+      - name: Build .pkg installer
+        run: |
+          chmod +x installer/build_pkg.sh
+          ./installer/build_pkg.sh build installer_output
+
+      - name: Zip raw plugin bundles (manual-install alternative)
+        run: |
+          mkdir -p installer_output
+          ditto -c -k --sequesterRsrc \
+            "build/SkateTune_artefacts/Release/VST3/SkateTune.vst3" \
+            "installer_output/SkateTune-VST3-raw.zip"
+          ditto -c -k --sequesterRsrc \
+            "build/SkateTune_artefacts/Release/AU/SkateTune.component" \
+            "installer_output/SkateTune-AU-raw.zip"
+
+      - name: Upload installer + raw bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkateTune-macOS
+          path: installer_output/*
+          if-no-files-found: error
