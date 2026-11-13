@@ -232,8 +232,38 @@ void SkateTuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         {
             if (pitchTracker.isVoiced())
             {
+                // A genuinely new onset (nothing voiced the previous hop) has
+                // to be judged BEFORE voicedHold is overwritten below.
+                const bool isNewOnset = ! voicedHold;
                 rawTrackedFreqHold = (double) pitchTracker.getFrequencyHz();
                 humanizeController.onNewPitchHop (skatetune::ScaleQuantizer::freqToMidi (rawTrackedFreqHold));
+
+                // trackingSmoother's whole job is to iron out hop-to-hop
+                // JITTER while a note is held, not to smear the moment a
+                // brand new note starts: left alone, it starts every
+                // plugin instance (and, worse, every silence-then-sing
+                // onset) climbing from its cold current=0.0 up to the real
+                // frequency at the Tracking-knob's time constant - up to
+                // 250ms, and a one-pole filter needs several time constants
+                // to actually arrive - so for the better part of a second
+                // the scale quantizer downstream is fed a continuum of
+                // WRONG intermediate frequencies, each snapping to whatever
+                // scale note happens to be nearest THAT wrong value. That
+                // is a real, confirmed-by-test correctness bug, not a
+                // subtle quality tradeoff: it was caught by actually running
+                // a sustained note through the full chain and watching the
+                // correction amount keep drifting for over a second instead
+                // of settling - see dsp_standalone_test.cpp's
+                // testTrackingSmootherSnapsOnNewOnset(). Snapping the
+                // smoother straight to the new frequency on a real onset
+                // (exactly the same "is this a note change or a hold"
+                // distinction HumanizeController already makes via
+                // onNewPitchHop) keeps the Tracking knob's smoothing for
+                // what it's actually for - jitter within a held note -
+                // without ever delaying which note is being targeted.
+                if (isNewOnset)
+                    trackingSmoother.reset (rawTrackedFreqHold);
+
                 voicedHold = true;
             }
             else
