@@ -34,7 +34,20 @@ jobs:
           echo "AU component:"
           find build/SkateTune_artefacts -iname "*.component" -maxdepth 4
 
+      - name: Read version from CMakeLists.txt
+        id: ver
+        run: |
+          VERSION=$(grep -oE 'project\(SkateTune VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | grep -oE '[0-9]+\.[0-9]+\.[0-9]+$')
+          if [ -z "$VERSION" ]; then
+            echo "Could not parse version from CMakeLists.txt" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building SkateTune v$VERSION (commit ${GITHUB_SHA:0:7})"
+
       - name: Build .pkg installer
+        env:
+          SKATETUNE_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           chmod +x installer/build_pkg.sh
           ./installer/build_pkg.sh build installer_output
@@ -60,8 +73,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest-build
-          name: "SkateTune - latest test build"
-          body: "Double-click SkateTune-Installer-1.0.0.pkg to install the VST3 and AU plugin in Logic Pro."
-          files: installer_output/SkateTune-Installer-1.0.0.pkg
+          name: "SkateTune v${{ steps.ver.outputs.version }} - latest test build"
+          body: |
+            Double-click **SkateTune-Installer-1.0.0.pkg** to install the VST3 and AU plugin in Logic Pro.
+            (That filename is kept fixed on purpose so an old download link never breaks - the file
+            inside is always the latest build. `SkateTune-Installer-${{ steps.ver.outputs.version }}.pkg`
+            is the exact same installer, named with the real version for clarity.)
+
+            **Version:** ${{ steps.ver.outputs.version }} - built from commit `${{ github.sha }}`
+          files: |
+            installer_output/SkateTune-Installer-1.0.0.pkg
+            installer_output/SkateTune-Installer-${{ steps.ver.outputs.version }}.pkg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
