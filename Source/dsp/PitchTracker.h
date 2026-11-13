@@ -24,10 +24,15 @@ public:
         sr = sampleRate;
         frameSize = std::max (64, (int) std::round (0.030 * sr));
         hopSize   = std::max (16, (int) std::round (0.010 * sr));
-        minLag = std::max (2, (int) std::round (sr / maxFreqHz));
-        maxLag = (int) std::round (sr / minFreqHz);
 
-        historySize = frameSize + maxLag + 4;
+        // Size the history buffer for the widest range setFrequencyRange()
+        // is ever allowed to ask for (see kWorstCaseMinFreqHz) - once, here
+        // - so that changing the frequency range later (e.g. an "Input
+        // Type" choice, switched live at the top of every block) never has
+        // to reallocate: it only ever adjusts minLag/maxLag, cheaply,
+        // inside buffers already sized for the worst case.
+        int worstCaseMaxLag = (int) std::round (sr / kWorstCaseMinFreqHz);
+        historySize = frameSize + worstCaseMaxLag + 4;
         history.assign (historySize, 0.0f);
         writePos = 0;
         historyFilled = 0;
@@ -35,6 +40,8 @@ public:
         lastFreq = 0.0f;
         voicedFlag = false;
         recentFreqs.clear();
+
+        recalcLagRange();
     }
 
     /** Feed one input sample. Returns true on the samples where a new
@@ -59,9 +66,33 @@ public:
     bool  isVoiced()       const { return voicedFlag; }
 
     void setVoicingThreshold (double t) { voicingThreshold = t; }
-    void setFrequencyRange (float minHz, float maxHz) { minFreqHz = minHz; maxFreqHz = maxHz; }
+
+    /** Narrowing this to the expected source (e.g. a vocal range) both
+        rejects octave errors and speeds up the search. Safe to call every
+        block with the same values - it's a no-op unless they actually
+        changed - and safe to call with different values at any time after
+        prepare(), since the history buffer is always sized up-front for
+        the full worst-case range (see kWorstCaseMinFreqHz). */
+    void setFrequencyRange (float minHz, float maxHz)
+    {
+        if (minHz == minFreqHz && maxHz == maxFreqHz)
+            return;
+        minFreqHz = minHz;
+        maxFreqHz = maxHz;
+        recalcLagRange();
+    }
 
 private:
+    void recalcLagRange()
+    {
+        minLag = std::max (2, (int) std::round (sr / maxFreqHz));
+        maxLag = (int) std::round (sr / minFreqHz);
+        // Defensive clamp: never exceed what the history buffer actually
+        // holds, even if a future caller passes something outside the
+        // range kWorstCaseMinFreqHz was chosen to cover.
+        maxLag = std::min (maxLag, historySize - frameSize - 4);
+    }
+
     void analyze()
     {
         frameBuf.resize ((size_t) frameSize);
@@ -152,6 +183,7 @@ private:
     float minFreqHz = 70.0f;
     float maxFreqHz = 1000.0f;
     double voicingThreshold = 0.35;
+    static constexpr float kWorstCaseMinFreqHz = 35.0f; // covers every Input Type choice (Bass = 50 Hz) with margin
 
     std::vector<float> history;
     int writePos = 0;
