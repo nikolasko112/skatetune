@@ -38,6 +38,12 @@ private:
         float boardShoveDeg = 0.0f; // about the vertical axis         -> squashes the drawn WIDTH
         float boardTiltDeg  = 0.0f; // an ordinary in-plane tilt (grind pitch, manual, slide) - no squash, just rotated
 
+        // Big aerial spins (900, McTwist): the whole skater+board silhouette
+        // rotates together as one rigid unit around the hip, unlike the
+        // board-only axes above. drawSkater() applies this as a single
+        // extra transform wrapped around everything else it draws.
+        float wholeBodySpinDeg = 0.0f;
+
         float bodyBounceY = 0.0f;   // normalised, - is up
         float boardLift   = 0.0f;   // normalised, how far the board is off the ground
 

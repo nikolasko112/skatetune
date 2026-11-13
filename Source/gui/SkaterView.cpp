@@ -98,13 +98,20 @@ SkaterView::Pose SkaterView::computePose (const Trick& trick, float phase01, flo
         {
             // How "busy" the spin is drives a bit of extra hang-time/pop -
             // an Ollie (no spin at all) stays modest, a 360 Flip or
-            // Impossible (the most rotation) gets visibly more air.
-            const float spin = std::abs (trick.boardFlipTurns) + std::abs (trick.boardShoveTurns);
+            // Impossible (lots of board rotation) or a 900/McTwist (lots of
+            // whole-body rotation) gets visibly more air.
+            const float spin = std::abs (trick.boardFlipTurns) + std::abs (trick.boardShoveTurns)
+                              + std::abs (trick.wholeBodySpinTurns);
             const float bigness = juce::jlimit (0.0f, 1.0f, spin / 2.0f);
+            const bool  isBigSpin = trick.wholeBodySpinTurns > 0.01f;
 
             p.bodyLean    = -15.0f * bump;
             p.armAngle1   = -20.0f - 50.0f * bump;
-            p.armAngle2   =  20.0f + 40.0f * bump;
+            // A real 900/McTwist is held in a grab, not a balancing flail -
+            // the back hand reaches down toward the board and stays there,
+            // rather than swinging wide the way the flip/shove tricks do.
+            p.armAngle2   = isBigSpin ? (10.0f + 15.0f * bump)
+                                       : (20.0f + 40.0f * bump);
             p.legAngle1   = -10.0f - 60.0f * bump;
             p.legAngle2   =  10.0f + 60.0f * bump;
             p.bodyBounceY = -(0.16f + 0.10f * bigness) * bump;
@@ -118,6 +125,12 @@ SkaterView::Pose SkaterView::computePose (const Trick& trick, float phase01, flo
             // as a distinct rotation rather than one generic flat spin.
             p.boardFlipDeg  = trick.boardFlipTurns  * 360.0f * t;
             p.boardShoveDeg = trick.boardShoveTurns * 360.0f * t;
+
+            // 900/McTwist: the whole skater+board silhouette spins together
+            // as one rigid unit (drawSkater() applies this about the hip) -
+            // unlike boardFlipDeg/boardShoveDeg above, which rotate the
+            // board relative to planted feet.
+            p.wholeBodySpinDeg = trick.wholeBodySpinTurns * 360.0f * t;
             break;
         }
 
@@ -294,6 +307,16 @@ void SkaterView::drawSkater (juce::Graphics& g, juce::Rectangle<float> area, con
     const float scale = juce::jmin (area.getWidth(), area.getHeight()) * 0.30f;
     const float anchorX = area.getX() + area.getWidth() * 0.5f;
     const float anchorY = area.getY() + area.getHeight() * 0.60f + pose.bodyBounceY * area.getHeight();
+
+    // Big aerial spins (900, McTwist) rotate the WHOLE skater+board
+    // silhouette together as one rigid unit about the hip anchor - the
+    // correct 2D fake for a real aerial spin, where the feet stay planted
+    // on the board throughout rather than the board moving under them.
+    // Scoped so it never leaks into drawRailAndSparks()/drawHud(), which
+    // are called separately right after this and must stay unrotated.
+    juce::Graphics::ScopedSaveState saveState (g);
+    if (std::abs (pose.wholeBodySpinDeg) > 0.01f)
+        g.addTransform (juce::AffineTransform::rotation (juce::degreesToRadians (pose.wholeBodySpinDeg), anchorX, anchorY));
 
     const auto toRad = [] (float deg) { return juce::degreesToRadians (deg); };
 
